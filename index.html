@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>PocketVoxel</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#87ceeb;font-family:system-ui,sans-serif;touch-action:none}
+#game{display:block;width:100%;height:100%}
+#cross{position:fixed;left:50%;top:50%;width:16px;height:16px;transform:translate(-50%,-50%);pointer-events:none;z-index:5}
+#cross:before,#cross:after{content:"";position:absolute;background:#fff;box-shadow:0 0 2px #000}
+#cross:before{width:2px;height:16px;left:7px}
+#cross:after{width:16px;height:2px;top:7px}
+#info{position:fixed;left:12px;top:12px;color:white;text-shadow:1px 1px 3px #000;z-index:4;font-size:14px}
+#hotbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:5px;z-index:6}
+.slot{width:46px;height:46px;border:2px solid #777;background:#222b;box-sizing:border-box;display:grid;place-items:center;color:#fff;font-size:11px;text-shadow:1px 1px #000}
+.slot.selected{border-color:#fff;box-shadow:0 0 0 2px #333}
+.swatch{width:27px;height:27px;border:1px solid #222}
+#touch{display:none;position:fixed;inset:0;z-index:7;pointer-events:none}
+.touchbtn{pointer-events:auto;position:absolute;border:1px solid #fff8;background:#0005;color:#fff;border-radius:12px;font-size:20px}
+#up{left:76px;bottom:145px;width:55px;height:55px}
+#down{left:76px;bottom:25px;width:55px;height:55px}
+#left{left:18px;bottom:85px;width:55px;height:55px}
+#right{left:134px;bottom:85px;width:55px;height:55px}
+#jump{right:22px;bottom:115px;width:75px;height:55px}
+#break{right:110px;bottom:42px;width:75px;height:55px}
+#place{right:22px;bottom:42px;width:75px;height:55px}
+#start{position:fixed;inset:0;z-index:10;display:grid;place-items:center;background:linear-gradient(#4c8bc8,#87ceeb);color:#fff;text-align:center}
+#start button{font-size:20px;padding:14px 28px;border:0;border-radius:12px;cursor:pointer}
+@media(pointer:coarse){#touch{display:block}#info{font-size:12px}.slot{width:40px;height:40px}.swatch{width:22px;height:22px}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas><div id="cross"></div>
+<div id="info">PocketVoxel • WASD + mouse • Space jump<br><span id="fps">60 FPS</span></div>
+<div id="hotbar"></div>
+<div id="touch">
+<button class="touchbtn" id="up">▲</button><button class="touchbtn" id="down">▼</button>
+<button class="touchbtn" id="left">◀</button><button class="touchbtn" id="right">▶</button>
+<button class="touchbtn" id="jump">JUMP</button><button class="touchbtn" id="break">BREAK</button><button class="touchbtn" id="place">PLACE</button>
+</div>
+<div id="start"><div><h1>PocketVoxel</h1><p>Original voxel sandbox • optimized for simple hardware</p><button id="startBtn">PLAY</button></div></div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+
+const canvas=document.querySelector('#game');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:false,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+renderer.setSize(innerWidth,innerHeight,false);
+renderer.shadowMap.enabled=false;
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x87ceeb);
+scene.fog=new THREE.Fog(0x87ceeb,42,115);
+
+const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,.05,180);
+camera.rotation.order='YXZ';
+
+const hemi=new THREE.HemisphereLight(0xbfe8ff,0x665544,1.25);
+scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xffffff,1.25);
+sun.position.set(35,70,20); scene.add(sun);
+
+const TYPES=[
+{name:'Grass',color:0x65b84a},
+{name:'Dirt',color:0x8a5a35},
+{name:'Stone',color:0x777777},
+{name:'Sand',color:0xd8c17a},
+{name:'Wood',color:0x79502f},
+{name:'Leaves',color:0x3f8d3a}
+];
+const mats=TYPES.map(t=>new THREE.MeshLambertMaterial({color:t.color,flatShading:true}));
+const box=new THREE.BoxGeometry(1,1,1);
+const world=new Map();
+const meshes=[];
+const W=64,D=64,SEA=7;
+const key=(x,y,z)=>x+','+y+','+z;
+const hash=(x,z)=>{let n=Math.sin(x*127.1+z*311.7)*43758.5453;return n-Math.floor(n)};
+function height(x,z){
+ const a=Math.sin(x*.16)*1.8+Math.cos(z*.13)*1.7+Math.sin((x+z)*.055)*3;
+ const b=(hash(x,z)-.5)*2;
+ return Math.max(3,Math.floor(9+a+b));
+}
+function setBlock(x,y,z,t){if(y<0||y>30)return;world.set(key(x,y,z),t)}
+function getBlock(x,y,z){return world.get(key(x,y,z))??-1}
+function generate(){
+ for(let x=-W/2;x<W/2;x++)for(let z=-D/2;z<D/2;z++){
+   const h=height(x,z);
+   for(let y=0;y<=h;y++) setBlock(x,y,z,y===h?0:(y>h-3?1:2));
+   if(h<SEA) for(let y=h+1;y<=SEA;y++) setBlock(x,y,z,3);
+   if(h>=SEA+1 && hash(x*3,z*7)>.92){
+     for(let y=h+1;y<=h+3;y++)setBlock(x,y,z,4);
+     for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)for(let dy=2;dy<=4;dy++){
+       if(Math.abs(dx)+Math.abs(dz)+(dy===4?1:0)<5 && getBlock(x+dx,h+dy,z+dz)===-1)setBlock(x+dx,h+dy,z+dz,5);
+     }
+   }
+ }
+}
+generate();
+
+function rebuild(){
+ for(const m of meshes)scene.remove(m);
+ meshes.length=0;
+ for(let t=0;t<TYPES.length;t++){
+   const positions=[];
+   for(const [k,type] of world){
+     if(type!==t)continue;
+     const [x,y,z]=k.split(',').map(Number);
+     let visible=false;
+     const ns=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+     for(const n of ns)if(getBlock(x+n[0],y+n[1],z+n[2])<0){visible=true;break}
+     if(visible)positions.push(x,y,z);
+   }
+   if(!positions.length)continue;
+   const mesh=new THREE.InstancedMesh(box,mats[t],positions.length/3);
+   const o=new THREE.Object3D();
+   for(let i=0;i<positions.length;i+=3){
+     o.position.set(positions[i]+.5,positions[i+1]+.5,positions[i+2]+.5);
+     o.updateMatrix();mesh.setMatrixAt(i/3,o.matrix);
+   }
+   mesh.instanceMatrix.needsUpdate=true;
+   mesh.userData.type=t;
+   scene.add(mesh);meshes.push(mesh);
+ }
+}
+rebuild();
+
+const player={x:.5,y:height(0,0)+2,z:.5,vy:0,onGround:false};
+camera.position.set(player.x,player.y+1.62,player.z);
+const keys={};
+let yaw=0,pitch=0,selected=0,locked=false;
+const speed=5.2,gravity=19,jump=7.2;
+function solidAt(x,y,z){
+ return getBlock(Math.floor(x),Math.floor(y),Math.floor(z))>=0;
+}
+function collides(x,y,z){
+ const r=.28;
+ for(const dx of [-r,r])for(const dy of [0,1.65])for(const dz of [-r,r])
+   if(solidAt(x+dx,y+dy,z+dz))return true;
+ return false;
+}
+function move(dt){
+ let mx=(keys.KeyD?1:0)-(keys.KeyA?1:0);
+ let mz=(keys.KeyS?1:0)-(keys.KeyW?1:0);
+ const l=Math.hypot(mx,mz)||1;mx/=l;mz/=l;
+ const c=Math.cos(yaw),s=Math.sin(yaw);
+ const dx=(mx*c-mz*s)*speed*dt,dz=(mx*s+mz*c)*speed*dt;
+ if(!collides(player.x+dx,player.y,player.z))player.x+=dx;
+ if(!collides(player.x,player.y,player.z+dz))player.z+=dz;
+ player.vy-=gravity*dt;
+ let ny=player.y+player.vy*dt;
+ if(!collides(player.x,ny,player.z)){player.y=ny;player.onGround=false}
+ else{
+   if(player.vy<0)player.onGround=true;
+   player.vy=0;
+ }
+ if(player.y<-10){player.x=.5;player.z=.5;player.y=height(0,0)+3}
+ camera.position.set(player.x,player.y+1.62,player.z);
+ camera.rotation.set(pitch,yaw,0);
+}
+function jumpPlayer(){if(player.onGround){player.vy=jump;player.onGround=false}}
+
+const ray=new THREE.Raycaster();
+function target(){
+ ray.setFromCamera(new THREE.Vector2(0,0),camera);
+ let best=null;
+ for(const m of meshes){
+   const hits=ray.intersectObject(m,false);
+   if(hits.length && hits[0].distance<7 && (!best||hits[0].distance<best.distance))best=hits[0];
+ }
+ return best;
+}
+function edit(place){
+ const hit=target();if(!hit)return;
+ const m=hit.object;
+ const idx=hit.instanceId;
+ const mat=new THREE.Matrix4();m.getMatrixAt(idx,mat);
+ const p=new THREE.Vector3().setFromMatrixPosition(mat);
+ const bx=Math.floor(p.x),by=Math.floor(p.y),bz=Math.floor(p.z);
+ if(place){
+   const n=hit.face.normal;
+   const x=bx+Math.round(n.x),y=by+Math.round(n.y),z=bz+Math.round(n.z);
+   if(getBlock(x,y,z)<0 && !collides(x+.5,y,z+.5)){setBlock(x,y,z,selected);rebuild()}
+ }else{world.delete(key(bx,by,bz));rebuild()}
+}
+
+document.addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='Space')jumpPlayer();if(e.code.startsWith('Digit')){const n=+e.code.slice(5)-1;if(n>=0&&n<TYPES.length){selected=n;renderHotbar()}}});
+document.addEventListener('keyup',e=>keys[e.code]=false);
+canvas.addEventListener('click',()=>{if(!locked)canvas.requestPointerLock();else edit(false)});
+document.addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('mousedown',e=>{if(locked&&e.button===2)edit(true)});
+document.addEventListener('pointerlockchange',()=>locked=document.pointerLockElement===canvas);
+document.addEventListener('mousemove',e=>{if(!locked)return;yaw-=e.movementX*.0022;pitch-=e.movementY*.0022;pitch=Math.max(-1.5,Math.min(1.5,pitch))});
+
+function renderHotbar(){
+ const h=document.querySelector('#hotbar');h.innerHTML='';
+ TYPES.forEach((t,i)=>{const d=document.createElement('div');d.className='slot'+(i===selected?' selected':'');d.innerHTML='<div class="swatch" style="background:#'+t.color.toString(16).padStart(6,'0')+'"></div><span>'+(i+1)+' '+t.name+'</span>';h.appendChild(d)})
+}
+renderHotbar();
+
+function bind(id,code){
+ const b=document.getElementById(id);
+ b.addEventListener('pointerdown',e=>{e.preventDefault();keys[code]=true});
+ b.addEventListener('pointerup',e=>{e.preventDefault();keys[code]=false});
+ b.addEventListener('pointercancel',()=>keys[code]=false);
+}
+bind('up','KeyW');bind('down','KeyS');bind('left','KeyA');bind('right','KeyD');
+document.getElementById('jump').onpointerdown=e=>{e.preventDefault();jumpPlayer()};
+document.getElementById('break').onpointerdown=e=>{e.preventDefault();edit(false)};
+document.getElementById('place').onpointerdown=e=>{e.preventDefault();edit(true)};
+
+let touchX=0,touchY=0;
+canvas.addEventListener('touchstart',e=>{if(e.touches.length===1){touchX=e.touches[0].clientX;touchY=e.touches[0].clientY}});
+canvas.addEventListener('touchmove',e=>{
+ if(e.touches.length!==1)return;
+ const t=e.touches[0];yaw-=(t.clientX-touchX)*.006;pitch-=(t.clientY-touchY)*.006;pitch=Math.max(-1.5,Math.min(1.5,pitch));touchX=t.clientX;touchY=t.clientY;
+});
+
+let last=performance.now(),frames=0,fpsTime=last;
+function loop(now){
+ const dt=Math.min(.033,(now-last)/1000);last=now;move(dt);
+ const day=(Math.sin(now*.00002)+1)/2;
+ sun.intensity=.55+day*1.0;hemi.intensity=.65+day*.75;
+ scene.background.setHSL(.56,.55,.55+.12*day);
+ scene.fog.color.copy(scene.background);
+ renderer.render(scene,camera);
+ frames++;if(now-fpsTime>1000){document.querySelector('#fps').textContent=frames+' FPS';frames=0;fpsTime=now}
+ requestAnimationFrame(loop);
+}
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight,false)});
+document.getElementById('startBtn').onclick=()=>{document.getElementById('start').style.display='none';canvas.requestPointerLock?.()};
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
